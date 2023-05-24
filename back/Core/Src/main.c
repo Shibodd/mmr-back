@@ -21,7 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdbool.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -67,79 +67,114 @@ static void MX_TIM2_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-void register_adc_dma_callbacks(
-		ADC_HandleTypeDef* hadc,
-		DMA_HandleTypeDef* hdma,
-		pADC_CallbackTypeDef conv_complete_cb,
-		pADC_CallbackTypeDef conv_error_cb,
-		void (* transfer_error_cb)(DMA_HandleTypeDef *_hdma)) {
 
-  if (HAL_DMA_RegisterCallback(hdma, HAL_DMA_XFER_ERROR_CB_ID, transfer_error_cb) != HAL_OK)
-    Error_Handler();
+/*
+ * UTILITIES
+ */
 
-  if (HAL_ADC_RegisterCallback(hadc, HAL_ADC_CONVERSION_COMPLETE_CB_ID, conv_complete_cb) != HAL_OK)
-    Error_Handler();
+#define MIN(a, b) (((a) < (b))? (a) : (b))
+#define MAX(a, b) (((a) > (b))? (a) : (b))
+#define CLAMP(x, min, max) MAX(min, MIN(max, x))
 
-  if (HAL_ADC_RegisterCallback(hadc, HAL_ADC_ERROR_CB_ID, conv_error_cb) != HAL_OK)
-    Error_Handler();
-}
+/*
+ * CLUTCH MAIN LOGIC
+ */
 
-void init_adc_dma() {
-  register_adc_dma_callbacks(&hadc1, &hdma_adc1, conv_complete_cb, conv_error_cb, transfer_error_cb);
-  register_adc_dma_callbacks(&hadc2, &hdma_adc2, conv_complete_cb, conv_error_cb, transfer_error_cb);
-}
+#define CLUTCH_CURRENT_HAL_ADC_HANDLE &hadc1
+#define CLUTCH_POSITION_HAL_ADC_HANDLE &hadc2
 
-void start_adc_dma() {
-  if (HAL_ADC_Start_DMA(&hadc1, &my_data, 1) != HAL_OK)
-	Error_Handler();
-  if (HAL_ADC_Start_DMA(&hadc2, &my_data, 1) != HAL_OK)
-	Error_Handler();
-}
+#define CLUTCH_CURRENT_HAL_DMA_HANDLE &hdma_adc1
+#define CLUTCH_POSITION_HAL_DMA_HANDLE &hdma_adc2
+
+#define CLUTCH_POSITION_DMA_BUF_LEN 2
+#define CLUTCH_CURRENT_DMA_BUF_LEN 1
+
+uint32_t clutchPositionDmaBuf[CLUTCH_POSITION_DMA_BUF_LEN];
+uint32_t clutchCurrentDmaBuf[CLUTCH_CURRENT_DMA_BUF_LEN];
 
 #define TIM_CLUTCH_MOTOR_PWM_CCR1 TIM3->CCR1
 #define TIM_CLUTCH_MOTOR_PWM_CCR2 TIM3->CCR4
-
-#define CLAMP(X, MIN, MAX) (X <= MIN? MIN : (X >= MAX? MAX : X))
-
+/**
+ * @brief Writes to the PWM timers the duty cycle that corresponds to the torque x.
+ * @param x A value in the range [-1, 1] expressing the signed torque:
+ *        0 means the motor applies no torque,
+ *        +-1 means the motor applies full torque in the direction expressed by the sign.
+ */
 void clutchWriteDutyCycle(float x) {
   if (x == 0) {
+	// The motor should apply no torque. Set both PWM duty cycles to 0 to completely stop any current.
     TIM_CLUTCH_MOTOR_PWM_CCR1 = 0;
     TIM_CLUTCH_MOTOR_PWM_CCR2 = 0;
     return;
   }
 
+  // Force x to be in the valid range
   x = CLAMP(x, -1, 1);
 
-  // Map x from [-1, 1] to [0, ARR]
-  const int HALF_ARR = CLUTCH_PWM_TIM_ARR_DEFAULT / 2;
-  uint32_t ccr1 = HALF_ARR + (int32_t)(x * HALF_ARR);
+  // Map x from [-1, 1] to [-HALF_ARR, HALF_ARR]
+  const int32_t HALF_ARR = TIM_CLUTCH_MOTOR_PWM_ARR_DEFAULT / 2;
+  int32_t diff_from_half = (int32_t)(x * HALF_ARR);
 
-  TIM_CLUTCH_MOTOR_PWM_CCR1 = ccr1;
-  TIM_CLUTCH_MOTOR_PWM_CCR2 = TIM_CLUTCH_MOTOR_PWM_ARR_DEFAULT - ccr1;
+  // Clamp the result to avoid overflow due to floating point errors
+  diff_from_half = CLAMP(diff_from_half, -HALF_ARR, HALF_ARR);
+
+  // Then write the CCRs, one complementary to the other.
+  TIM_CLUTCH_MOTOR_PWM_CCR1 = HALF_ARR + diff_from_half;
+  TIM_CLUTCH_MOTOR_PWM_CCR2 = HALF_ARR - diff_from_half;
 }
 
-void onClutchCurrentADCConversionComplete(ADC_HandleTypeDef* hadc) {
+void clutchCurrentADCConversionComplete_InterruptHandler(ADC_HandleTypeDef* hadc) {
   // TODO: update PID
 
   float ans = 0.0f;
   clutchWriteDutyCycle(ans);
 }
 
-void onClutchPositionADCConversionComplete(ADC_HandleTypeDef* hadc) {
+void clutchPositionADCConversionComplete_InterruptHandler(ADC_HandleTypeDef* hadc) {
   // TODO: update PID
 
 }
 
 
-void onClutchADCConversionError() {
+/*
+ * CLUTCH ADC/DMA MANAGEMENT
+ */
 
+bool clutchDmaError = false;
+void clutchDMATransferError_InterruptHandler(DMA_HandleTypeDef *hdma) {
+	// Signal the rest of the program that the clutch DMA peripheral has entered an error state so that a restart is attempted
+	clutchDmaError = true;
 }
 
-void onClutchDMATransferError() {
+bool startClutchAdcDma(ADC_HandleTypeDef* hadc, DMA_HandleTypeDef* hdma, pADC_CallbackTypeDef convCompleteCallback, uint32_t* buf, uint32_t buf_len) {
+  // HAL_*_RegisterCallback only returns false on bad parameters
+  bool cbOk = HAL_ADC_RegisterCallback(hadc, HAL_ADC_CONVERSION_COMPLETE_CB_ID, convCompleteCallback)
+  	  	   && HAL_DMA_RegisterCallback(hdma, HAL_DMA_XFER_ERROR_CB_ID, clutchDMATransferError_InterruptHandler);
 
+  return cbOk && HAL_ADC_Start_DMA(hadc, buf, buf_len) == HAL_OK;
 }
 
+bool startClutchCurrentAdcDma() {
+  return startClutchAdcDma(
+		  CLUTCH_CURRENT_HAL_ADC_HANDLE,
+		  CLUTCH_CURRENT_HAL_DMA_HANDLE,
+		  clutchCurrentADCConversionComplete_InterruptHandler,
+		  clutchCurrentDmaBuf,
+		  CLUTCH_CURRENT_DMA_BUF_LEN);
+}
 
+bool startClutchPositionAdcDma() {
+  return startClutchAdcDma(
+		  CLUTCH_POSITION_HAL_ADC_HANDLE,
+		  CLUTCH_POSITION_HAL_DMA_HANDLE,
+		  clutchPositionADCConversionComplete_InterruptHandler,
+		  clutchPositionDmaBuf,
+		  CLUTCH_POSITION_DMA_BUF_LEN);
+}
+
+bool tryStartClutchAdcDma() {
+  return !(startClutchCurrentAdcDma() && startClutchPositionAdcDma());
+}
 
 /* USER CODE END 0 */
 
@@ -178,6 +213,8 @@ int main(void)
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
 
+  clutchDmaError = tryStartClutchAdcDma();
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -185,6 +222,15 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
+
+	// If one of the clutch DMA peripherals are in an error state
+    if (clutchDmaError) {
+      // Stop the motor
+      clutchWriteDutyCycle(0.0f);
+
+      // Attempt to restart the peripherals
+      clutchDmaError = tryStartClutchAdcDma();
+    }
 
     /* USER CODE BEGIN 3 */
   }
