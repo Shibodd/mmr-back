@@ -240,7 +240,6 @@ int main(void)
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
 
-
   HAL_TIM_Base_Start(TIM_CLUTCH_POSADC_TRG_HAL_HANDLE);
 
   HAL_TIM_Base_Start(TIM_CLUTCH_MOTOR_PWM_HAL_HANDLE);
@@ -248,13 +247,6 @@ int main(void)
   HAL_TIM_PWM_Start(TIM_CLUTCH_MOTOR_PWM_HAL_HANDLE, TIM_CHANNEL_4);
 
   clutchDmaError = tryStartClutchAdcDma();
-
-  clutchWriteTorque(0.5f);
-
-
-
-  //TIM_CLUTCH_MOTOR_PWM_CCR1 = 1000;
-  //TIM_CLUTCH_MOTOR_PWM_CCR2 = 1000;
 
   /* USER CODE END 2 */
 
@@ -266,7 +258,14 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
+	// If one of the clutch DMA peripherals are in an error state
+	if (clutchDmaError) {
+	  // Stop the motor
+	  clutchWriteDutyCycle(0.0f);
 
+	  // Attempt to restart the peripherals
+	  clutchDmaError = tryStartClutchAdcDma();
+	}
   }
   /* USER CODE END 3 */
 }
