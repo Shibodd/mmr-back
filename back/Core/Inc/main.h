@@ -59,7 +59,7 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define TIM_CLUTCH_MOTOR_PWM_ARR_DEFAULT 4200-1
+#define TIM_CLUTCH_MOTOR_PWM_ARR_DEFAULT (4200-1)
 #define B1_Pin GPIO_PIN_13
 #define B1_GPIO_Port GPIOC
 #define ADC_CLUTCH_LEVER_POSITION_Pin GPIO_PIN_2

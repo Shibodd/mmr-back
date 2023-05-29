@@ -1,0 +1,17 @@
+main.c:116:6:clutchWriteTorque	5
+main.c:142:6:clutchCurrentADCConversionComplete_InterruptHandler	1
+main.c:154:6:clutchPositionADCConversionComplete_InterruptHandler	1
+main.c:170:6:clutchDMATransferError_InterruptHandler	1
+main.c:175:6:startClutchAdcDma	5
+main.c:184:6:startClutchCurrentAdcDma	1
+main.c:193:6:startClutchPositionAdcDma	1
+main.c:202:6:tryStartClutchAdcDma	3
+main.c:212:5:main	1
+main.c:278:6:SystemClock_Config	3
+main.c:326:13:MX_ADC1_Init	3
+main.c:378:13:MX_ADC2_Init	4
+main.c:439:13:MX_TIM2_Init	6
+main.c:497:13:MX_TIM3_Init	7
+main.c:558:13:MX_DMA_Init	1
+main.c:579:13:MX_GPIO_Init	1
+main.c:627:6:Error_Handler	1
